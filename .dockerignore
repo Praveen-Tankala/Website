@@ -9,3 +9,6 @@ uploads
 !.env.local.example
 *.log
 *.tsbuildinfo
+*.pem
+!certs/
+!certs/rds-global-bundle.pem

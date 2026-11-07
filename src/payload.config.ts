@@ -1,9 +1,12 @@
 import path from 'path'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'url'
+
 import { postgresAdapter } from '@payloadcms/db-postgres'
 import { s3Storage } from '@payloadcms/storage-s3'
 import { buildConfig } from 'payload'
 import { en as adminLanguage } from '@payloadcms/translations/languages/en'
-import { fileURLToPath } from 'url'
+
 import { Admins } from './collections/Admins'
 import { Media } from './collections/Media'
 import { Folders } from './collections/Folders'
@@ -17,26 +20,44 @@ import { WebsiteSettings } from './globals/WebsiteSettings'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
-const localStorageMode = process.env.PAYLOAD_STORAGE ?? 'local'
 
-function requireEnv(name: 'DATABASE_URL' | 'PAYLOAD_SECRET'): string {
+function requireEnv(name: string): string {
   const value = process.env[name]
-  if (!value) {
-    throw new Error(`Missing ${name}. Set it in your local .env.local file.`)
+
+  if (!value || !value.trim()) {
+    throw new Error(`Missing ${name}. Set it in your environment file.`)
   }
+
   return value
 }
 
-function getS3StorageConfig() {
-  if (localStorageMode !== 's3') return undefined
+const databaseURL = requireEnv('DATABASE_URL')
+const payloadSecret = requireEnv('PAYLOAD_SECRET')
 
-  const bucket = process.env.S3_BUCKET
-  const region = process.env.AWS_REGION
+const localStorageMode = process.env.PAYLOAD_STORAGE ?? 'local'
+
+// AWS RDS SSL configuration
+const rdsSSL = {
+  rejectUnauthorized: true,
+  ca: readFileSync(
+    process.env.RDS_CA_CERT_PATH ??
+      '/app/certs/rds-global-bundle.pem',
+    'utf8',
+  ),
+}
+
+// S3 storage configuration
+function getS3StorageConfig() {
+  if (localStorageMode !== 's3') {
+    return undefined
+  }
+
+  const bucket = requireEnv('S3_BUCKET')
+  const region = requireEnv('AWS_REGION')
+
   const accessKeyId = process.env.AWS_ACCESS_KEY_ID
   const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY
 
-  if (!bucket) throw new Error('S3_BUCKET is required when PAYLOAD_STORAGE=s3.')
-  if (!region) throw new Error('AWS_REGION is required when PAYLOAD_STORAGE=s3.')
   if (Boolean(accessKeyId) !== Boolean(secretAccessKey)) {
     throw new Error(
       'Set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or omit both to use the AWS runtime role.',
@@ -44,7 +65,7 @@ function getS3StorageConfig() {
   }
 
   const endpoint =
-    process.env.S3_ENDPOINT ||
+    process.env.S3_ENDPOINT ??
     `https://s3.${region}.amazonaws.com${region.startsWith('cn-') ? '.cn' : ''}`
 
   const mediaCollection = process.env.S3_PREFIX
@@ -84,7 +105,9 @@ const storageAdapters = s3Config ? [s3Storage(s3Config)] : []
 export default buildConfig({
   admin: {
     user: Admins.slug,
-    routes: { logout: '/signed-out' as const },
+    routes: {
+      logout: '/signed-out' as const,
+    },
     constrainWidth: true,
     dashboard: {
       widgets: [],
@@ -97,10 +120,14 @@ export default buildConfig({
       baseDir: path.resolve(dirname),
     },
   },
+
   i18n: {
     fallbackLanguage: 'en' as const,
-    supportedLanguages: { en: adminLanguage },
+    supportedLanguages: {
+      en: adminLanguage,
+    },
   },
+
   collections: [
     Admins,
     Media,
@@ -112,28 +139,36 @@ export default buildConfig({
     Testimonials,
     Enquiries,
   ],
+
   globals: [WebsiteSettings],
+
   typescript: {
     outputFile: path.resolve(dirname, 'payload-types.ts'),
   },
+
   localization: {
     locales: [{ code: 'en', label: 'English' }],
     fallback: true,
     defaultLocale: 'en',
   },
+
   storage: storageAdapters,
+
   db: postgresAdapter({
-    // Schema changes only via migrations; dev push would drop S3-only media columns.
     push: false,
+
     pool: {
-      connectionString: requireEnv('DATABASE_URL'),
+      connectionString: databaseURL,
+      ssl: rdsSSL,
       max: Number(process.env.DB_POOL_MAX ?? 10),
       connectionTimeoutMillis: 10_000,
       idleTimeoutMillis: 30_000,
       statement_timeout: 30_000,
       idle_in_transaction_session_timeout: 60_000,
     },
+
     migrationDir: path.resolve(dirname, 'migrations'),
   }),
-  secret: requireEnv('PAYLOAD_SECRET'),
+
+  secret: payloadSecret,
 })
